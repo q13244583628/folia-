@@ -1,5 +1,5 @@
 # 任务栏控制条（taskbar-controls）
-https://raw.githubusercontent.com/q13244583628/folia-/main/3.png
+
 给 Folia 做一个贴在**屏幕底部任务栏左下角**的透明控制条，替代壁纸模式下没法点的底部控制栏：
 
 - 背景完全透明，只显示图标与文字（带阴影，保证深浅壁纸下都看得清）
