@@ -4,7 +4,7 @@
   "name": "任务栏控制条",
   "version": "1.4.0",
   "author": "sunweijian",
-  "preview": "https://github.com/q13244583628/folia-/blob/main/3.png",
+  "preview": "https://raw.githubusercontent.com/q13244583628/folia-/main/3.png",
   "description": "在屏幕底部任务栏左下角浮出一条透明控制条：上一首 / 播放暂停 / 下一首 / 循环 / 喜欢 / 音量 / 打开播放器侧边面板。可点击箭头展开第二排控件；背景全透明，只保留图标与文字。前台有程序全屏（电影、游戏、全屏网页）时自动隐藏，退出全屏后自动恢复。",
   "main": "main.cjs",
   "client": "client.mjs",
