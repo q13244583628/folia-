@@ -362,7 +362,9 @@
     </div>
 
     <script>
-        const { ipcRenderer } = require('electron');
+
+        // 控制条窗口不开 Node：ipcRenderer 拿不到，所有通信走 preload 暴露的 window.tb
+        const bridge = window.tb || null;
 
         const root = document.getElementById('root');
         const els = {
@@ -391,50 +393,58 @@
             miniCount: document.getElementById('miniCount'),
         };
 
-        const send = (action, value) => ipcRenderer.send('tb-cmd', { action, value });
+        const send = (action, value) => {
+            if (bridge) bridge.send(action, value);
+        };
+        if (!bridge) {
+            // preload 没生效时按钮会全部静默失效，把原因直接写在状态行上
+            els.debugText.textContent = '控制条未能初始化，请重新启用模组';
+        }
 
         let expanded = false;
         let snapshot = null;
 
-        // ---- 自检状态：判断「点不到窗口」还是「点到了但没执行」
-        const diag = { clicks: 0, lastAction: '', lastError: '', lastStateAt: 0 };
+        // ---- 连接状态：这行小字告诉用户控制条有没有接上 Folia 的播放器
+        let lastStateAt = 0;
+        let lastError = '';
+        let lastErrorAt = 0;
 
-        const renderDebug = () => {
-            const age = diag.lastStateAt ? Math.round((Date.now() - diag.lastStateAt) / 1000) : -1;
-            const dotClass = age >= 0 && age <= 3 ? 'ok' : age >= 0 && age <= 15 ? 'stale' : '';
-            els.linkDot.className = dotClass;
-            els.miniDot.className = dotClass;
-            els.miniCount.textContent = String(diag.clicks);
-            const parts = [
-                age >= 0 ? `Folia 链路 ${age}s 前` : '未收到 Folia 状态',
-                `点击 ${diag.clicks}`,
-                diag.lastAction ? `最后 ${diag.lastAction}` : '还没点过',
-            ];
-            if (diag.lastError) parts.push(`错误 ${diag.lastError}`);
-            els.debugText.textContent = parts.join(' · ');
+        const renderStatus = () => {
+            if (!bridge) return;
+            if (lastError && Date.now() - lastErrorAt < 8000) {
+                els.debugText.textContent = lastError;
+                els.linkDot.className = 'stale';
+                els.miniDot.className = 'stale';
+                return;
+            }
+            const age = lastStateAt ? Math.round((Date.now() - lastStateAt) / 1000) : -1;
+            const live = age >= 0 && age <= 15;
+            els.linkDot.className = live ? 'ok' : '';
+            els.miniDot.className = live ? 'ok' : '';
+            els.miniCount.textContent = '';
+            els.debugText.textContent = live ? '已连接 Folia 播放器' : '未连接到 Folia 播放器';
         };
-        setInterval(renderDebug, 1000);
+        setInterval(renderStatus, 1000);
 
         document.addEventListener(
             'pointerdown',
             (event) => {
-                // 捕获阶段计数：只要窗口收到鼠标，这里就会加 1
-                diag.clicks += 1;
                 const target = event.target.closest('button');
-                if (target) {
-                    target.classList.add('flash');
-                    setTimeout(() => target.classList.remove('flash'), 160);
-                    diag.lastAction = target.id;
-                }
-                renderDebug();
+                if (!target) return;
+                target.classList.add('flash');
+                setTimeout(() => target.classList.remove('flash'), 160);
             },
             true,
         );
 
-        ipcRenderer.on('tb-error', (_event, payload) => {
-            diag.lastError = payload ? `${payload.action}: ${payload.message}` : '';
-            renderDebug();
-        });
+        if (bridge) {
+            bridge.onError((payload) => {
+                if (!payload) return;
+                lastError = String(payload.message || '操作没有生效');
+                lastErrorAt = Date.now();
+                renderStatus();
+            });
+        }
 
         const formatTime = (seconds) => {
             const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
@@ -453,7 +463,7 @@
                 const wanted = Math.max(40, content);
                 if (wanted === lastHeight) return;
                 lastHeight = wanted;
-                ipcRenderer.send('tb-resize', { height: wanted });
+                if (bridge) bridge.resize(wanted);
             });
         };
 
@@ -473,8 +483,8 @@
 
         const render = (data) => {
             snapshot = data;
-            diag.lastStateAt = Date.now();
-            renderDebug();
+            lastStateAt = Date.now();
+            renderStatus();
             if (!data) return;
 
             const playing = data.state === 'playing';
@@ -535,7 +545,9 @@
             }
         });
 
-        ipcRenderer.on('tb-state', (_event, data) => render(data));
+        if (bridge) bridge.onState((data) => render(data));
+        // 主动拉状态：主进程缓存了最新快照，回发一次就能立刻显示（不怕丢消息）
+        setInterval(() => send('sync'), 3000);
 
         // 双击控制条空白处也能展开
         root.addEventListener('dblclick', (event) => {
@@ -549,15 +561,6 @@
         } catch (error) {
             /* 忽略：老版本内核没有 ResizeObserver */
         }
-
-        // ---- hover 心跳：主进程靠它判断窗口还能不能接鼠标
-        let lastHoverSent = 0;
-        window.addEventListener('mousemove', () => {
-            const now = Date.now();
-            if (now - lastHoverSent < 400) return;
-            lastHoverSent = now;
-            ipcRenderer.send('tb-hover');
-        });
 
         // ---- 主进程重建窗口后，按 URL 参数恢复展开状态
         const startExpanded = new URLSearchParams(location.search).get('expanded') === '1';

@@ -4,7 +4,18 @@
 // 循环模式推给主进程，由主进程转交给任务栏上的那根透明控制条。
 
 export default function activate(folium) {
-    // 低版本宿主没有 1.7 才有的 rpc.send / rpc.on，先挡一下
+    // client ↔ main 走宿主的 rpc：名字必须是 /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/，
+    // 冒号会被宿主直接拒掉，所以这一组只用小写字母和连字符。
+    const CH = {
+        cmd: 'tb-cmd',
+        state: 'tb-state',
+        error: 'tb-error',
+        config: 'tb-config',
+        visibility: 'tb-visibility',
+        heartbeat: 'tb-heartbeat',
+    };
+
+    // 低版本宿主没有 rpc 能力，先挡一下
     if (!folium.rpc || typeof folium.rpc.on !== 'function') {
         folium.log.error('宿主 Folium 版本过低，缺少 rpc 能力');
         return;
@@ -69,7 +80,7 @@ export default function activate(folium) {
 
     const pushConfig = () => {
         const values = readSettings();
-        folium.rpc.call('tb-config', {
+        folium.rpc.call(CH.config, {
             width: Number(values.barWidth) || 320,
             offsetX: Number(values.offsetX) || 0,
             bottomGap: Number(values.bottomGap) || 0,
@@ -105,7 +116,7 @@ export default function activate(folium) {
             // 位置每秒都在变，只在有意义的变化时推，减少 IPC 噪声
             if (json === lastJson) return;
             lastJson = json;
-            folium.rpc.call('tb-state', data).catch((error) => folium.log.warn('推送播放状态失败', error));
+            folium.rpc.call(CH.state, data).catch((error) => folium.log.warn('推送播放状态失败', error));
         } catch (error) {
             folium.log.warn('读取播放状态失败', error);
         }
@@ -148,7 +159,7 @@ export default function activate(folium) {
         },
     };
 
-    folium.rpc.on('tb-cmd', (payload) => {
+    folium.rpc.on(CH.cmd, (payload) => {
         const action = payload?.action;
         const handler = actions[action];
         if (!handler) {
@@ -160,12 +171,12 @@ export default function activate(folium) {
             folium.log.info(`控制条指令 ${action} -> ${String(result)}`);
             // 宿主明确拒绝（喜欢不可用、没有可返回层级等）时回显到控制条上
             if (result === false) {
-                folium.rpc.call('tb-error', { action, message: '宿主拒绝了这次操作' }).catch(() => { });
+                folium.rpc.call(CH.error, { action, message: '宿主拒绝了这次操作' }).catch(() => { });
             }
         } catch (error) {
             folium.log.error(`指令 ${action} 执行失败`, error);
             folium.rpc
-                .call('tb-error', { action, message: String(error?.message ?? error) })
+                .call(CH.error, { action, message: String(error?.message ?? error) })
                 .catch(() => { });
         }
         // 动作完成后立刻刷新一次，控制条不用等下一拍
@@ -191,6 +202,19 @@ export default function activate(folium) {
     // 进度每秒走一次
     folium.every(1000, push);
 
+    // 心跳：主进程靠它判断「主窗口还在不在」。主窗口关掉后 client 就没了，
+    // 控制条会据此自动隐藏，避免留下一条点了没反应的死条。
+    const beat = () => {
+        try {
+            const pending = folium.rpc.call(CH.heartbeat, 1);
+            if (pending && typeof pending.then === 'function') pending.catch(() => { });
+        } catch (error) {
+            /* 心跳失败不影响播放控制 */
+        }
+    };
+    beat();
+    folium.every(2000, beat);
+
     section.settings.onChange(() => {
         lastJson = '';
         pushConfig();
@@ -199,7 +223,7 @@ export default function activate(folium) {
 
     // ---- 命令：贴回任务栏左下角（控制条被别的置顶窗口盖住时用）
     folium.registries.commands.register({
-        id: 'snap-back',
+        id: 'taskbar-controls-snap-back',
         label: { 'zh-CN': '任务栏控制条：贴回左下角', en: 'Taskbar bar: snap back' },
         description: {
             'zh-CN': '重新把控制条放到任务栏左下方，并提到最上层。',
@@ -209,6 +233,28 @@ export default function activate(folium) {
         run: () => {
             pushConfig();
             return '已把控制条贴回任务栏左下角';
+        },
+    });
+
+    // ---- 命令：临时隐藏 / 显示控制条
+    folium.registries.commands.register({
+        id: 'taskbar-controls-toggle-visibility',
+        label: { 'zh-CN': '任务栏控制条：隐藏 / 显示', en: 'Taskbar bar: hide / show' },
+        description: {
+            'zh-CN': '临时隐藏控制条（例如全屏玩游戏时），再执行一次就恢复显示。',
+            en: 'Temporarily hide the bar; run again to show it.',
+        },
+        keywords: ['taskbar', 'bar', 'hide', 'show'],
+        run: () => {
+            try {
+                const pending = folium.rpc.call(CH.visibility, {});
+                if (pending && typeof pending.then === 'function') {
+                    pending.catch((error) => folium.log.warn('切换控制条可见性失败', error));
+                }
+            } catch (error) {
+                folium.log.warn('切换控制条可见性失败', error);
+            }
+            return '已切换控制条显示状态';
         },
     });
 
